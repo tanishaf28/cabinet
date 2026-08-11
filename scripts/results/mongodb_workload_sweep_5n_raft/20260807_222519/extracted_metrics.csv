@@ -1,0 +1,7 @@
+system,size,experiment,filename,throughput,avg_latency,p50,p95,p99,conflict
+cabinet,5,n5_cab_mongo_workload_a,merged_cabinet_clients_20260807_223404.csv,362.0,13.581,14.3,18.9,20.1,1156.0
+cabinet,5,n5_cab_mongo_workload_b,merged_cabinet_clients_20260807_224252.csv,361.3,13.625,14.2,18.7,19.9,1201.0
+cabinet,5,n5_cab_mongo_workload_c,merged_cabinet_clients_20260807_225141.csv,376.1,13.087,13.5,17.9,19.0,1218.0
+cabinet,5,n5_cab_mongo_workload_d,merged_cabinet_clients_20260807_230053.csv,7.1,555.582,5.6,7.2,25019.2,38.0
+cabinet,5,n5_cab_mongo_workload_e,merged_cabinet_clients_20260807_231001.csv,5.0,780.154,7.2,10.0,25023.0,23.0
+cabinet,5,n5_cab_mongo_workload_f,merged_cabinet_clients_20260807_231848.csv,350.6,14.047,14.7,18.9,20.1,1075.0

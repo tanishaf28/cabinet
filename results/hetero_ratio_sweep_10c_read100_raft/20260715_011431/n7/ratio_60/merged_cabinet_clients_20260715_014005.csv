@@ -1,0 +1,10 @@
+metric,value,notes
+NUM_CLIENT_DIRS,10,client* folders under eval
+NUM_CLIENTS_MERGED,10,clients with CSV data
+TOTAL_THROUGHPUT,628.8 Tx/sec,sum of all clients
+AVG_LATENCY,15.544 ms,across all batches all clients
+P50_LATENCY,16.0 ms,
+P95_LATENCY,22.3 ms,
+P99_LATENCY,25.3 ms,
+TOTAL_SLOW_COMMITS,0,0.0%
+TOTAL_CONFLICT_COMMITS,0,

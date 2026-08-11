@@ -1,0 +1,13 @@
+t0_epoch=1783805614.711710555
+cycle_1_normal_start_s=0.001
+cycle_1_delay_start_s=17.672
+cycle_1_delay_end_s=27.080
+cycle_2_normal_start_s=27.083
+cycle_2_delay_start_s=43.619
+cycle_2_delay_end_s=53.017
+cycle_3_normal_start_s=53.020
+cycle_3_delay_start_s=68.945
+cycle_3_delay_end_s=79.697
+cycle_4_normal_start_s=79.700
+cycle_4_delay_start_s=95.785
+cycle_4_delay_end_s=105.663

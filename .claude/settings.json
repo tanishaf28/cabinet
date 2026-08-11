@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"//wsl.localhost/Ubuntu-24.04/home/t_fonsec/cabinet\" && grep -n \"BINARY\\\\|go build\\\\|copy_binary\" scripts/start_cluster_hetero.sh scripts/start_cluster_homo.sh | grep -v \"^.*#\")",
+      "Read(///wsl.localhost/Ubuntu-24.04/home/t_fonsec/**)",
+      "Bash(grep -ln \"go build\\\\|BINARY=\" run_homo_plainmsg_cab.sh run_homo_plainmsg_raft.sh run_hetero_plainmsg_cab.sh run_hetero_plainmsg_raft.sh run_hetero_maxinflight_cab.sh run_hetero_crash_cab.sh run_hetero_netem_cab.sh)",
+      "Bash(cd \"//wsl.localhost/Ubuntu-24.04/home/t_fonsec/cabinet\" && echo \"=== top-level *.sh ===\" && ls *.sh 2>/dev/null | sort && echo \"=== scripts/*.sh ===\" && ls scripts/*.sh 2>/dev/null | sort)",
+      "Bash(cd \"//wsl.localhost/Ubuntu-24.04/home/t_fonsec/cabinet\" && grep -n \"HOT_RATIO\\\\|COMMON_RATIO\\\\|PRELOAD\\\\|-hot=\\\\|-common=\\\\|-preload\" scripts/run_cluster.sh)",
+      "Bash(bash -n scripts/run_cluster.sh)",
+      "Bash(wsl.exe -- python3 --version)",
+      "Bash(cd /home/t_fonsec/cabinet)",
+      "Bash(wsl.exe -- bash -lc \"cd /home/t_fonsec/cabinet && python3 -m py_compile merge_eval.py extract_metrics.py && echo COMPILE_OK\")",
+      "Bash(wsl.exe -- *)"
+    ]
+  }
+}

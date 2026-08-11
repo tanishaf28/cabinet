@@ -1,0 +1,2 @@
+system,size,experiment,filename,throughput,avg_latency,p50,p95,p99,conflict
+cabinet,5,cycle_10n5d_5ms_jitter_0ms_indep100_b10,merged_cabinet_servers_20260711_213541.csv,5805.8,1.669,1.0,6.8,11.9,0.0

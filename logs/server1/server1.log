@@ -1,0 +1,3 @@
+time="2026-08-10 19:49:04" level=info msg="Server 1: perfM initialized" func=main.init.0 file="/home/ubuntu/cabinet/main.go:59"
+time="2026-08-10 19:49:05" level=info msg="mongo DB initialization done" func=main.initMongoDB file="/home/ubuntu/cabinet/conns.go:149"
+time="2026-08-10 19:49:05" level=info msg="Follower 1: RPC server listening on 192.168.73.243:10001" func=main.runFollower file="/home/ubuntu/cabinet/conns.go:106"

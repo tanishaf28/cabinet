@@ -1,0 +1,5 @@
+# Generated MongoDB data
+mongodb_data/
+
+# Generated YCSB workload data
+ycsb/workData/
