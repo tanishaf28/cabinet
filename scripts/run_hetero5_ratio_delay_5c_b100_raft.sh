@@ -33,7 +33,7 @@ EVAL_DIR="${REPO_ROOT}/eval"
 
 DELAY_MS="${DELAY_MS:-10}"
 JITTER_MS="${JITTER_MS:-10}"
-RUNTIME_SECONDS="${RUNTIME_SECONDS:-30}"
+RUNTIME_SECONDS="${RUNTIME_SECONDS:-60}"
 DELAY_APPLIED=false
 CLUSTER_ACTIVE=false
 
@@ -41,13 +41,14 @@ CLUSTER_ACTIVE=false
 # independent) -> 0 (all dependent).
 INDEP_RATIOS=(100 90 80 60 40 20 10 0)
 
-SERVER_IPS=(
-    "192.168.73.59"
-    "192.168.73.243"
-    "192.168.73.192"
-    "192.168.73.134"
-    "192.168.73.132"
-)
+# start_cluster_hetero.sh's own default CONFIG_PATH for NUM_SERVERS=5 is
+# cluster_hetero_5n_10c.conf; pinned explicitly here (and passed via
+# BASE_ENV below) so SERVER_IPS derived from it below can never drift from
+# what actually gets deployed, unlike the previous hardcoded SERVER_IPS
+# list which had drifted from an earlier IP pool.
+CONFIG_PATH="${REPO_ROOT}/config/cluster_hetero_5n_10c.conf"
+mapfile -t ALL_POOL_IPS < <(awk 'NF >= 2 {print $2}' "$CONFIG_PATH")
+SERVER_IPS=("${ALL_POOL_IPS[@]:0:5}")
 
 BASE_ENV=()
 
@@ -128,12 +129,13 @@ run_case() {
     rm -rf "${EVAL_DIR}"/client* "${EVAL_DIR}"/server* "${EVAL_DIR}"/merged 2>/dev/null || true
 
     BASE_ENV=(
-        "NUM_SERVERS=5" "NUM_CLIENTS=5" "THRESHOLD=2" "OPS=0"
+        "NUM_SERVERS=5" "NUM_CLIENTS=2" "THRESHOLD=2" "OPS=0"
         "EVAL_TYPE=0" "BATCHSIZE=100" "MSG_SIZE=512" "MODE=1"
         "INDEP_RATIO=${indep}" "NUM_OBJECTS=1000"
         "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-        "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+        "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
         "ENABLE_TIMESERIES=${extra_timeseries}"
+        "CONFIG_PATH=${CONFIG_PATH}"
     )
 
     start_cluster

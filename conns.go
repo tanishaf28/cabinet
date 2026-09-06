@@ -4,6 +4,7 @@ import (
 	"cabinet/config"
 	"cabinet/mongodb"
 	"encoding/gob"
+	"fmt"
 	"net"
 	"net/rpc"
 	"os"
@@ -89,7 +90,9 @@ func runFollower() {
 		// nothing needs to be done
 	case MongoDB:
 		go mongoDBCleanUp()
-		initMongoDB()
+		if err := initMongoDB(); err != nil {
+			log.Fatalf("Follower %d: MongoDB initialization failed: %v", myServerID, err)
+		}
 	}
 
 	if err := rpc.RegisterName("CabService", NewCabService()); err != nil {
@@ -121,32 +124,53 @@ func runFollower() {
 	}
 }
 
-func initMongoDB() {
+// initMongoDB returns an error instead of just logging and returning, as it
+// used to: its sole caller (runFollower) discarded the return entirely, so
+// a failed connection left mongoDbFollower nil and the follower proceeded
+// to register/accept RPCs anyway. Worse than that alone: with no nil check
+// here, a nil mongoDbFollower (NewMongoFollower returns nil on a client
+// construction failure - see mongodb/mgdb_follower.go) meant the very next
+// line, ClearTable -> FollowerAPI, dereferenced a nil receiver and panicked
+// the whole follower process.
+//
+// This matters more here than in a leaderless design: followers are the
+// ONLY replicas that ever hold real MongoDB data in Cabinet (the leader
+// deliberately never initializes mongoDbFollower - see MongoConfirm's doc
+// comment in parameters.go), and conJobMongoConfirm's mongoDbFollower==nil
+// guard treats "not initialized" as a legitimate no-op success, which is
+// correct for the leader but indistinguishable from a follower whose own
+// init silently failed. A follower with a broken init would silently no-op
+// every MongoDB write forever, reporting success, with server-side metrics
+// looking empty and no clear reason why - same symptom found and fixed in
+// woc's initMongoDB.
+func initMongoDB() error {
 	gob.Register([]mongodb.Query{})
 
 	// Use server ID as DB suffix in all modes to avoid collisions across replicas.
 	mongoDbFollower = mongodb.NewMongoFollower(mongoClientNum, int(1), myServerID)
 
+	if mongoDbFollower == nil {
+		return fmt.Errorf("mongodb follower initialization failed")
+	}
+
 	queriesToLoad, err := mongodb.ReadQueryFromFile(mongodb.DataPath + "workload.dat")
 	if err != nil {
-		log.Errorf("getting load data failed | error: %v", err)
-		return
+		return fmt.Errorf("getting load data failed: %w", err)
 	}
 
 	err = mongoDbFollower.ClearTable("usertable")
 	if err != nil {
-		log.Errorf("clean up table failed | err: %v", err)
-		return
+		return fmt.Errorf("clean up table failed: %w", err)
 	}
 
 	log.Debugf("loading data to Mongo DB")
 	_, _, err = mongoDbFollower.FollowerAPI(queriesToLoad)
 	if err != nil {
-		log.Errorf("load data failed | error: %v", err)
-		return
+		return fmt.Errorf("load data failed: %w", err)
 	}
 
 	log.Infof("mongo DB initialization done")
+	return nil
 }
 
 // mongoDBCleanUp cleans up client connections to DB upon ctrl+C

@@ -143,7 +143,7 @@ for client_count in "${CLIENT_COUNTS[@]}"; do
         "CONFIG_PATH=${CONFIG_PATH}"
         "INDEP_RATIO=90" "NUM_OBJECTS=1000"
         "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-        "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+        "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
         "MAX_INFLIGHT=5"
     )
     run_case "clients_${client_count}" "$RUNTIME_SECONDS"

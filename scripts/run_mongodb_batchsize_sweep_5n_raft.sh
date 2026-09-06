@@ -39,7 +39,7 @@ if [[ "${1:-}" == "--help" ]]; then
     cat <<'EOF'
 Usage: bash run_mongodb_batchsize_sweep_5n_raft.sh
 
-Sweeps BATCHSIZE over 1,10,50,100,500,1000,2000 with INDEP_RATIO=90
+Sweeps BATCHSIZE over 1,10,50,100,500,1000,2000 with INDEP_RATIO="${INDEP_RATIO:-90.0}"
 fixed, against the heterogeneous 5-node Raft MongoDB cluster
 (start_mongodb_hetero_5n.sh, -et=1, ENABLE_PRIORITY=false).
 
@@ -106,7 +106,7 @@ run_case() {
     echo "=================================================="
 
     CLUSTER_ACTIVE=true
-    INDEP_RATIO=90 BATCHSIZE="$batch_size" NUM_OBJECTS=1000 READ_RATIO=0 ENABLE_PRIORITY=false \
+    INDEP_RATIO="${INDEP_RATIO:-90.0}" BATCHSIZE="$batch_size" NUM_OBJECTS=1000 READ_RATIO=0 ENABLE_PRIORITY=false \
         bash "$START_SCRIPT" "$WORKLOAD"
     sleep "$RUNTIME_SECONDS"
     NUM_SERVERS=5 NUM_CLIENTS=5 bash "$STOP_SCRIPT"

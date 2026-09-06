@@ -46,9 +46,9 @@ INDEP_RATIOS=(100 90 80 60 40 20 10 0)
 SERVER_IPS=(
     "192.168.73.59"
     "192.168.73.243"
-    "192.168.73.192"
-    "192.168.73.134"
-    "192.168.73.132"
+    "192.168.73.27"
+    "192.168.73.157"
+    "192.168.73.78"
 )
 
 CLIENT_IPS=(
@@ -140,7 +140,7 @@ run_case() {
         "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
         "INDEP_RATIO=${indep}" "NUM_OBJECTS=1000"
         "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-        "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+        "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
     )
 
     start_cluster

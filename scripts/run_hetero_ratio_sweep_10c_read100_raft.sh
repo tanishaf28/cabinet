@@ -152,7 +152,7 @@ for NUM_SERVERS in "${ALL_CLUSTER_SIZES[@]}"; do
             "CONFIG_PATH=${CONFIG_PATH}"
             "INDEP_RATIO=${indep}" "NUM_OBJECTS=1000" "READ_RATIO=100"
             "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-            "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+            "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
         )
         run_case "n${NUM_SERVERS}/ratio_${indep}" "$RUNTIME_SECONDS"
     done

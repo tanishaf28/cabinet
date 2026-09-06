@@ -1,0 +1,2 @@
+system,size,experiment,filename,throughput,avg_latency,p50,p95,p99,conflict
+cabinet,5,case_replica3,merged_cabinet_clients_20260826_001250.csv,824.3,18.03,18.6,22.6,24.0,6470.0

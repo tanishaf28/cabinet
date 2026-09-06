@@ -1,0 +1,9 @@
+system,size,experiment,filename,throughput,avg_latency,p50,p95,p99,conflict
+raft,5,ratio_0,merged_cabinet_servers_20260831_032309.csv,564.8,1.618,1.6,2.3,2.6,36366.0
+raft,5,ratio_10,merged_cabinet_servers_20260831_032131.csv,548.7,1.676,1.7,2.4,2.6,31795.0
+raft,5,ratio_100,merged_cabinet_servers_20260831_031145.csv,538.4,1.697,1.7,2.3,2.6,0.0
+raft,5,ratio_20,merged_cabinet_servers_20260831_031953.csv,584.8,1.556,1.5,2.2,2.5,30059.0
+raft,5,ratio_40,merged_cabinet_servers_20260831_031816.csv,552.3,1.654,1.6,2.3,2.6,21409.0
+raft,5,ratio_60,merged_cabinet_servers_20260831_031638.csv,606.2,1.496,1.5,2.1,2.4,15613.0
+raft,5,ratio_80,merged_cabinet_servers_20260831_031500.csv,515.8,1.78,1.8,2.4,2.7,6740.0
+raft,5,ratio_90,merged_cabinet_servers_20260831_031323.csv,543.3,1.682,1.7,2.3,2.6,3531.0

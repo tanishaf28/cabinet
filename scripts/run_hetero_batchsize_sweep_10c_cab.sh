@@ -32,12 +32,12 @@ EVAL_DIR="${REPO_ROOT}/eval"
 
 CLUSTER_ACTIVE=false
 
-RUNTIME_SECONDS="${RUNTIME_SECONDS:-30}"
+RUNTIME_SECONDS="${RUNTIME_SECONDS:-40}"
 # A number, or the literal string "match" to run clients=servers for each
 # size in the sweep (client VMs are cycled/reused when a size needs more
 # clients than the 10-VM pool has, e.g. n=11 matched -- see
 # start_cluster_hetero.sh).
-CLIENT_COUNT="${CLIENT_COUNT:-10}"
+CLIENT_COUNT="${CLIENT_COUNT:-2}"
 
 ALL_CLUSTER_SIZES=(3 5 7 11)
 if [ -n "${CLUSTER_SIZES:-}" ]; then
@@ -45,6 +45,9 @@ if [ -n "${CLUSTER_SIZES:-}" ]; then
 fi
 
 TEST_CASES=(1 10 50 100 500 1000 2000)
+if [ -n "${BATCH_CASES:-}" ]; then
+    read -r -a TEST_CASES <<< "$BATCH_CASES"
+fi
 
 declare -A CONFIG_10C_FOR_N=(
     [3]="${REPO_ROOT}/config/cluster_hetero_3n_10c.conf"
@@ -154,9 +157,10 @@ for NUM_SERVERS in "${ALL_CLUSTER_SIZES[@]}"; do
             "NUM_SERVERS=${NUM_SERVERS}" "NUM_CLIENTS=${CURRENT_CLIENT_COUNT}" "THRESHOLD=${THRESHOLD}" "OPS=0"
             "EVAL_TYPE=0" "BATCHSIZE=${batch_size}" "MSG_SIZE=512" "MODE=1"
             "CONFIG_PATH=${CONFIG_PATH}"
-            "INDEP_RATIO=90" "NUM_OBJECTS=1000"
+            "INDEP_RATIO=${INDEP_RATIO_FIXED:-90}" "NUM_OBJECTS=1000"
             "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
             "LOG_LEVEL=info" "ENABLE_PRIORITY=true" "RATIO_STEP=0.001"
+            "BATCHWINDOWUS=${BATCHWINDOWUS:-0}" "MAXBATCH=${MAXBATCH:-1}"
         )
         run_case "n${NUM_SERVERS}/batch_${batch_size}" "$RUNTIME_SECONDS"
     done

@@ -47,6 +47,15 @@ var evalType int
 var batchsize int
 var msgsize int
 
+// Server-side batching: the leader accumulates commands arriving from
+// multiple concurrent clients for up to batchWindowUs microseconds (or until
+// maxBatch requests have queued, whichever comes first) and commits them
+// together in one consensus round, instead of one round per client RPC. This
+// is independent of batchsize (client-side pre-packing). batchWindowUs=0 or
+// maxBatch=1 disables server-side batching entirely (today's behavior).
+var batchWindowUs int
+var maxBatch int
+
 var ratioTryStep float64
 var enablePriority bool
 
@@ -89,6 +98,8 @@ func loadCommandLineInputs() {
 
 	flag.IntVar(&threshold, "t", 1, "# of quorum tolerated")
 	flag.IntVar(&batchsize, "b", 1, "batch size")
+	flag.IntVar(&batchWindowUs, "batchwindowus", 0, "server-side batch accumulation window in microseconds (0 = disabled)")
+	flag.IntVar(&maxBatch, "maxbatch", 1, "max requests merged into one consensus round (1 = disabled)")
 	flag.IntVar(&myServerID, "id", 0, "this server ID")
 	flag.StringVar(&configPath, "path", "./config/cluster_localhost.conf", "config file path")
 
@@ -142,6 +153,12 @@ func loadCommandLineInputs() {
 	quorum = threshold + 1
 	if maxInflight < 1 {
 		maxInflight = 1
+	}
+	if maxBatch < 1 {
+		maxBatch = 1
+	}
+	if batchWindowUs < 0 {
+		batchWindowUs = 0
 	}
 	log.Debugf("CommandLine parameters:\n - numOfServers:%v\n - myServerID:%v\n", numOfServers, myServerID)
 }

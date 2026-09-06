@@ -180,7 +180,7 @@ for NUM_SERVERS in "${SERVER_COUNTS[@]}"; do
                 "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
                 "INDEP_RATIO=${indep}" "NUM_OBJECTS=1000"
                 "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-                "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+                "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
             )
             run_case "n${NUM_SERVERS}/eval1_indep_${indep}" "$RUNTIME_SECONDS"
         done
@@ -197,7 +197,7 @@ for NUM_SERVERS in "${SERVER_COUNTS[@]}"; do
                 "EVAL_TYPE=0" "BATCHSIZE=${batch_size}" "MSG_SIZE=512" "MODE=1"
                 "INDEP_RATIO=90" "NUM_OBJECTS=1000"
                 "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-                "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+                "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
             )
             run_case "n${NUM_SERVERS}/eval2_batch_${batch_size}" "$RUNTIME_SECONDS"
         done
@@ -214,7 +214,7 @@ for NUM_SERVERS in "${SERVER_COUNTS[@]}"; do
                 "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=${msg_size}" "MODE=1"
                 "INDEP_RATIO=90" "NUM_OBJECTS=1000"
                 "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-                "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+                "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
             )
             run_case "n${NUM_SERVERS}/eval3_msgsize_${msg_size}" "$RUNTIME_SECONDS"
         done
@@ -231,7 +231,7 @@ for NUM_SERVERS in "${SERVER_COUNTS[@]}"; do
                 "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
                 "INDEP_RATIO=90" "NUM_OBJECTS=1000"
                 "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-                "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+                "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
                 "READ_RATIO=${read_ratio}"
             )
             run_case "n${NUM_SERVERS}/eval4_readratio_${read_ratio}" "$RUNTIME_SECONDS"

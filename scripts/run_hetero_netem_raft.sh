@@ -1,13 +1,15 @@
 #!/bin/bash
 # ================================================================
 # HETEROGENEOUS NETWORK-DELAY EVAL (RAFT)
-# D1: uniform delay sweep. D4: bursty calm/spike cycling.
-# Extracted out of run_hetero_plainmsg_cab.sh's old eval4/eval4s
-# blocks, which now only cover indep/batch/msgsize/read sweeps
-# (see run_hetero_plainmsg_cab.sh).
+# D1: uniform delay sweep {0,5,10}ms. D4: bursty calm/spike cycling.
 #
-# Selectors: scaled (default, max-inflight scaled per delay) | fixed
-# (max-inflight pinned at 5, isolates delay as the only variable).
+# Trimmed from the old 7-point (0/5/10/20/50/100/200ms) scaled+fixed sweep
+# down to a single {0,5,10}ms+burst run at fixed MAX_INFLIGHT=5, and
+# switched delay injection from all-nodes to SERVER-egress-only, so this
+# matches WOC's/EPaxos's netem evals point-for-point and scope-for-scope
+# (all 4 systems' netem numbers are now directly comparable; previously
+# Cabinet/Raft's numbers included client-egress delay that WOC/EPaxos's
+# didn't).
 # ================================================================
 
 set -euo pipefail
@@ -28,30 +30,24 @@ RUN_TS="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="${RESULT_ROOT}/${RUN_TS}"
 EVAL_DIR="${REPO_ROOT}/eval"
 
-SERVER_IPS=(
-    "192.168.73.59"
-    "192.168.73.243"
-    "192.168.73.192"
-    "192.168.73.134"
-    "192.168.73.132"
-)
-
-CLIENT_IPS=(
-    "192.168.73.218"
-    "192.168.73.219"
-)
+CONFIG_PATH="${REPO_ROOT}/config/cluster_hetero_5n_10c.conf"
+mapfile -t ALL_POOL_IPS < <(awk 'NF >= 2 {print $2}' "$CONFIG_PATH")
+SERVER_IPS=("${ALL_POOL_IPS[@]:0:5}")
+NUM_CLIENTS="${NUM_CLIENTS:-2}"
+CLIENT_IPS=("${ALL_POOL_IPS[@]:5:NUM_CLIENTS}")
 
 CLUSTER_ACTIVE=false
-RUNTIME_SECONDS="${RUNTIME_SECONDS:-45}"
-SELECTOR="${1:-scaled}"
+RUNTIME_SECONDS="${RUNTIME_SECONDS:-60}"
+INDEP_RATIO_FIXED="${INDEP_RATIO_FIXED:-90}"
 
 BASE_ENV=(
-    "NUM_SERVERS=5" "NUM_CLIENTS=2" "THRESHOLD=2" "OPS=0"
+    "NUM_SERVERS=5" "NUM_CLIENTS=${NUM_CLIENTS}" "THRESHOLD=2" "OPS=0"
     "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
-    "INDEP_RATIO=90" "NUM_OBJECTS=1000"
+    "INDEP_RATIO=${INDEP_RATIO_FIXED}" "NUM_OBJECTS=1000"
     "PIPELINE_MODE=true" "MAX_INFLIGHT=5"
     "ENABLE_TIMESERIES=true"
-    "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "SERVER_BATCHING=false"
+    "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "SERVER_BATCHING=false"
+    "CONFIG_PATH=${CONFIG_PATH}"
 )
 
 mkdir -p "$RUN_DIR"
@@ -66,61 +62,58 @@ detect_interface() {
     remote_exec "$host" "ip route show default 2>/dev/null | awk '{print \$5; exit}'"
 }
 
-cache_all_interfaces() {
-    echo "  [iface] Caching network interfaces..."
+cache_server_ifaces() {
+    echo "  [iface] Caching server network interfaces..."
     _CACHED_SERVER_IFACES=()
-    _CACHED_CLIENT_IFACES=()
     for ip in "${SERVER_IPS[@]}"; do
         local iface; iface=$(detect_interface "$ip")
         _CACHED_SERVER_IFACES+=("$iface")
     done
-    for ip in "${CLIENT_IPS[@]}"; do
-        local iface; iface=$(detect_interface "$ip")
-        _CACHED_CLIENT_IFACES+=("$iface")
-    done
 }
 
-apply_uniform_delay() {
+# apply_server_only_delay: SERVER_IPS only, never a CLIENT_IPS interface.
+apply_server_only_delay() {
     local delay_ms=$1
     local jitter_ms=$2
     if [ "$delay_ms" -eq 0 ]; then
-        remove_all_delay; return 0
+        remove_server_delay; return 0
     fi
-    echo "  [netem D1] ${delay_ms}ms ±${jitter_ms}ms on all nodes..."
-    for ip in "${SERVER_IPS[@]}" "${CLIENT_IPS[@]}"; do
+    echo "  [netem D1] ${delay_ms}ms ±${jitter_ms}ms on server links only..."
+    # netem rejects "distribution normal" at jitter=0ms, failing the qdisc
+    # add outright -- the `|| true` below swallows it, leaving NO delay
+    # applied. Omit jitter/distribution entirely when jitter_ms=0.
+    local netem_clause="delay ${delay_ms}ms"
+    [ "$jitter_ms" -gt 0 ] && netem_clause="delay ${delay_ms}ms ${jitter_ms}ms distribution normal"
+    for ip in "${SERVER_IPS[@]}"; do
         local iface; iface=$(detect_interface "$ip")
         [ -z "$iface" ] && continue
         remote_exec "$ip" \
             "sudo tc qdisc del dev '$iface' root 2>/dev/null || true; \
-             sudo tc qdisc add dev '$iface' root netem delay ${delay_ms}ms ${jitter_ms}ms distribution normal" \
+             sudo tc qdisc add dev '$iface' root netem ${netem_clause}" \
             || true
     done
     sleep 1
 }
 
-remove_all_delay() {
-    echo "  [netem] Removing all impairments..."
+remove_server_delay() {
+    echo "  [netem] Removing server-side delay..."
     local use_cache=false
-    if declare -p _CACHED_SERVER_IFACES _CACHED_CLIENT_IFACES >/dev/null 2>&1 && \
-       [ "${#_CACHED_SERVER_IFACES[@]}" -eq "${#SERVER_IPS[@]}" ] && \
-       [ "${#_CACHED_CLIENT_IFACES[@]}" -eq "${#CLIENT_IPS[@]}" ]; then
+    if declare -p _CACHED_SERVER_IFACES >/dev/null 2>&1 && \
+       [ "${#_CACHED_SERVER_IFACES[@]}" -eq "${#SERVER_IPS[@]}" ]; then
         use_cache=true
     fi
 
-    local all_ips=("${SERVER_IPS[@]}" "${CLIENT_IPS[@]}")
-
     if [ "$use_cache" = true ]; then
-        local all_ifaces=("${_CACHED_SERVER_IFACES[@]}" "${_CACHED_CLIENT_IFACES[@]}")
-        for idx in "${!all_ips[@]}"; do
-            local ip="${all_ips[$idx]}"
-            local iface="${all_ifaces[$idx]}"
+        for idx in "${!SERVER_IPS[@]}"; do
+            local ip="${SERVER_IPS[$idx]}"
+            local iface="${_CACHED_SERVER_IFACES[$idx]}"
             [ -z "$iface" ] && continue
             ssh -i "$SSH_KEY" "$USER@$ip" \
                 "sudo tc qdisc del dev '$iface' root 2>/dev/null || true" || true &
         done
         wait
     else
-        for ip in "${all_ips[@]}"; do
+        for ip in "${SERVER_IPS[@]}"; do
             local iface; iface=$(detect_interface "$ip")
             [ -z "$iface" ] && continue
             remote_exec "$ip" "sudo tc qdisc del dev '$iface' root 2>/dev/null || true" || true
@@ -135,7 +128,12 @@ start_cluster_with_timeseries() {
 }
 
 stop_cluster() {
-    env "${BASE_ENV[@]}" bash "$STOP_SCRIPT"
+    # stop_cluster_hetero.sh reads CLIENT_COUNT (default 2), not NUM_CLIENTS
+    # -- BASE_ENV only carries NUM_CLIENTS, so without this the stop/collect
+    # phase silently falls back to 2 clients regardless of how many were
+    # actually started, dropping every client beyond the 2nd from both the
+    # graceful-stop pass and the eval-directory collection.
+    env "${BASE_ENV[@]}" CLIENT_COUNT="${NUM_CLIENTS}" bash "$STOP_SCRIPT"
     CLUSTER_ACTIVE=false
 }
 
@@ -176,18 +174,18 @@ run_d1_case_sampled() {
 
     echo ""
     echo "=================================================="
-    echo "Running (sampled): $label  [D1 ${delay_ms}ms ±${jitter_ms}ms]"
+    echo "Running (sampled): $label  [D1 ${delay_ms}ms ±${jitter_ms}ms, server-only]"
     echo "=================================================="
 
     rm -rf "${EVAL_DIR}"/client* "${EVAL_DIR}"/server* "${EVAL_DIR}"/merged 2>/dev/null || true
 
-    apply_uniform_delay "$delay_ms" "$jitter_ms"
+    apply_server_only_delay "$delay_ms" "$jitter_ms"
     start_cluster_with_timeseries
     inject_event "delay_${delay_ms}ms"
 
     sleep "$RUNTIME_SECONDS"
 
-    remove_all_delay
+    remove_server_delay
     stop_cluster
     archive_results "$label"
 }
@@ -196,156 +194,90 @@ run_d4_case_sampled() {
     local label=$1
     local calm_duration="${2:-10}"
     local burst_duration="${3:-5}"
-    local runtime_override="${4:-$RUNTIME_SECONDS}"
+    local burst_delay_ms="${4:-1000}"
+    local burst_jitter_ms="${5:-100}"
+    # See apply_server_only_delay's comment: netem rejects jitter=0ms with
+    # "distribution normal", which fails the qdisc add silently.
+    local burst_netem_clause="delay ${burst_delay_ms}ms"
+    [ "$burst_jitter_ms" -gt 0 ] && burst_netem_clause="delay ${burst_delay_ms}ms ${burst_jitter_ms}ms distribution normal"
 
     echo ""
     echo "=================================================="
-    echo "Running (sampled): $label  [D4 ${calm_duration}s calm / ${burst_duration}s burst]"
+    echo "Running (sampled): $label  [D4 ${calm_duration}s calm / ${burst_duration}s burst @ ${burst_delay_ms}ms±${burst_jitter_ms}ms, server-only]"
     echo "=================================================="
 
     rm -rf "${EVAL_DIR}"/client* "${EVAL_DIR}"/server* "${EVAL_DIR}"/merged 2>/dev/null || true
 
-    cache_all_interfaces
-    remove_all_delay
+    cache_server_ifaces
+    remove_server_delay
     start_cluster_with_timeseries
     inject_event "calm_start"
 
     local elapsed=0
     local cycle=0
 
-    while [ "$elapsed" -lt "$runtime_override" ]; do
+    while [ "$elapsed" -lt "$RUNTIME_SECONDS" ]; do
         inject_event "calm_c${cycle}"
         for i in "${!SERVER_IPS[@]}"; do
             ssh -i "$SSH_KEY" "$USER@${SERVER_IPS[$i]}" \
                 "sudo tc qdisc del dev '${_CACHED_SERVER_IFACES[$i]}' root 2>/dev/null || true" || true &
         done
-        for i in "${!CLIENT_IPS[@]}"; do
-            ssh -i "$SSH_KEY" "$USER@${CLIENT_IPS[$i]}" \
-                "sudo tc qdisc del dev '${_CACHED_CLIENT_IFACES[$i]}' root 2>/dev/null || true" || true &
-        done
         wait
 
-        local calm_sleep=$(( calm_duration < (runtime_override - elapsed) ? calm_duration : (runtime_override - elapsed) ))
+        local calm_sleep=$(( calm_duration < (RUNTIME_SECONDS - elapsed) ? calm_duration : (RUNTIME_SECONDS - elapsed) ))
         sleep "$calm_sleep"
         elapsed=$(( elapsed + calm_sleep ))
-        [ "$elapsed" -ge "$runtime_override" ] && break
+        [ "$elapsed" -ge "$RUNTIME_SECONDS" ] && break
 
         inject_event "burst_c${cycle}"
         for i in "${!SERVER_IPS[@]}"; do
             ssh -i "$SSH_KEY" "$USER@${SERVER_IPS[$i]}" \
                 "sudo tc qdisc del dev '${_CACHED_SERVER_IFACES[$i]}' root 2>/dev/null || true; \
-                 sudo tc qdisc add dev '${_CACHED_SERVER_IFACES[$i]}' root netem delay 1000ms 100ms distribution normal" \
-                || true &
-        done
-        for i in "${!CLIENT_IPS[@]}"; do
-            ssh -i "$SSH_KEY" "$USER@${CLIENT_IPS[$i]}" \
-                "sudo tc qdisc del dev '${_CACHED_CLIENT_IFACES[$i]}' root 2>/dev/null || true; \
-                 sudo tc qdisc add dev '${_CACHED_CLIENT_IFACES[$i]}' root netem delay 1000ms 100ms distribution normal" \
+                 sudo tc qdisc add dev '${_CACHED_SERVER_IFACES[$i]}' root netem ${burst_netem_clause}" \
                 || true &
         done
         wait
 
-        local burst_sleep=$(( burst_duration < (runtime_override - elapsed) ? burst_duration : (runtime_override - elapsed) ))
+        local burst_sleep=$(( burst_duration < (RUNTIME_SECONDS - elapsed) ? burst_duration : (RUNTIME_SECONDS - elapsed) ))
         sleep "$burst_sleep"
         elapsed=$(( elapsed + burst_sleep ))
         cycle=$(( cycle + 1 ))
     done
 
     inject_event "post_burst"
-    remove_all_delay
+    remove_server_delay
     stop_cluster
     archive_results "$label"
 }
 
 cleanup() {
-    remove_all_delay || true
+    remove_server_delay || true
     if [ "$CLUSTER_ACTIVE" = true ]; then
         stop_cluster || true
     fi
 }
 trap cleanup EXIT INT
 
-case "$SELECTOR" in
-    scaled|fixed) ;;
-    *)
-        echo "ERROR: unknown selector '${SELECTOR}'. Usage: bash run_hetero_netem_cab.sh [scaled|fixed]"
-        exit 1 ;;
-esac
-
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║  HETEROGENEOUS NETWORK-DELAY EVAL (Raft) — ${SELECTOR}"
+echo "║  HETEROGENEOUS NETWORK-DELAY EVAL (Cabinet): {0,5,10}ms + burst ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo "Result archive: $RUN_DIR"
 echo ""
 
-if [ "$SELECTOR" = "scaled" ]; then
-    echo "── D1: Uniform delays (max-inflight scaled per delay) ──────────"
-    # Format: "delay_ms max_inflight" -- MAX_INFLIGHT scaled so it's never
-    # the bottleneck: rule of thumb MAX_INFLIGHT = ceil(target_tps*latency_s)
-    D1_CASES=(
-        "0   10"
-        "5   15"
-        "10  20"
-        "20  30"
-        "50  60"
-        "100 100"
-        "200 150"
-    )
-    for entry in "${D1_CASES[@]}"; do
-        delay_ms=$(echo $entry | awk '{print $1}')
-        inflight=$(echo $entry | awk '{print $2}')
-        jitter_ms=0
-        [ "$delay_ms" -ne 0 ] && jitter_ms=$(( delay_ms / 5 ))
-        BASE_ENV=(
-            "NUM_SERVERS=5" "NUM_CLIENTS=2" "THRESHOLD=2" "OPS=0"
-            "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
-            "INDEP_RATIO=90" "NUM_OBJECTS=1000"
-            "PIPELINE_MODE=true" "MAX_INFLIGHT=${inflight}"
-            "ENABLE_TIMESERIES=true"
-            "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "SERVER_BATCHING=false"
-        )
-        run_d1_case_sampled "D1_${delay_ms}ms" "$delay_ms" "$jitter_ms"
-    done
+echo "── D1: Uniform delays, server-only (fixed MAX_INFLIGHT=5) ───────"
+D1_DELAYS=(0 5 10)
+if [ -n "${DELAY_CASES:-}" ]; then
+    read -r -a D1_DELAYS <<< "$DELAY_CASES"
+fi
+for delay_ms in "${D1_DELAYS[@]}"; do
+    jitter_ms=0
+    [ "$delay_ms" -ne 0 ] && jitter_ms=$(( delay_ms / 5 ))
+    run_d1_case_sampled "D1_${delay_ms}ms" "$delay_ms" "$jitter_ms"
+done
 
-    echo "── D4: Bursting (15s calm / 10s spike at 1000ms) ────────────────"
-    BASE_ENV=(
-        "NUM_SERVERS=5" "NUM_CLIENTS=2" "THRESHOLD=2" "OPS=0"
-        "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
-        "INDEP_RATIO=90" "NUM_OBJECTS=1000"
-        "PIPELINE_MODE=true" "MAX_INFLIGHT=5"
-        "ENABLE_TIMESERIES=true"
-        "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "SERVER_BATCHING=false"
-    )
-    D4_RUNTIME=$(( RUNTIME_SECONDS < 90 ? 90 : RUNTIME_SECONDS ))
-    run_d4_case_sampled "D4_burst" 15 10 "$D4_RUNTIME"
-else
-    echo "── D1: Uniform delays (fixed MAX_INFLIGHT=5) ────────────────────"
-    D1_DELAYS=(0 5 10 20 50 100 200)
-    for delay_ms in "${D1_DELAYS[@]}"; do
-        jitter_ms=0
-        [ "$delay_ms" -ne 0 ] && jitter_ms=$(( delay_ms / 5 ))
-        BASE_ENV=(
-            "NUM_SERVERS=5" "NUM_CLIENTS=2" "THRESHOLD=2" "OPS=0"
-            "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
-            "INDEP_RATIO=90" "NUM_OBJECTS=1000"
-            "PIPELINE_MODE=true" "MAX_INFLIGHT=5"
-            "ENABLE_TIMESERIES=true"
-            "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "SERVER_BATCHING=false"
-        )
-        run_d1_case_sampled "D1_fixed_${delay_ms}ms" "$delay_ms" "$jitter_ms"
-    done
-
-    echo "── D4: Bursting (fixed MAX_INFLIGHT=5, 15s calm / 10s spike) ────"
-    BASE_ENV=(
-        "NUM_SERVERS=5" "NUM_CLIENTS=2" "THRESHOLD=2" "OPS=0"
-        "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
-        "INDEP_RATIO=90" "NUM_OBJECTS=1000"
-        "PIPELINE_MODE=true" "MAX_INFLIGHT=5"
-        "ENABLE_TIMESERIES=true"
-        "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "SERVER_BATCHING=false"
-    )
-    D4_RUNTIME=$(( RUNTIME_SECONDS < 90 ? 90 : RUNTIME_SECONDS ))
-    run_d4_case_sampled "D4_fixed_burst" 15 10 "$D4_RUNTIME"
+if [ "${SKIP_BURST:-false}" != "true" ]; then
+    echo "── D4: Bursting, server-only (fixed MAX_INFLIGHT=5, 15s calm / 10s spike) ──"
+    run_d4_case_sampled "D4_burst_${BURST_DELAY_MS:-1000}ms" 15 10 "${BURST_DELAY_MS:-1000}" "${BURST_JITTER_MS:-100}"
 fi
 
 echo ""

@@ -34,7 +34,7 @@ CLUSTER_ACTIVE=false
 
 NUM_SERVERS="${NUM_SERVERS:-5}"
 THRESHOLD=$(( (NUM_SERVERS - 1) / 2 ))
-RUNTIME_SECONDS="${RUNTIME_SECONDS:-30}"
+RUNTIME_SECONDS="${RUNTIME_SECONDS:-60}"
 INDEP_RATIO="${INDEP_RATIO:-90}"
 NUM_OBJECTS="${NUM_OBJECTS:-1000}"
 
@@ -124,7 +124,7 @@ for read_ratio in "${TEST_CASES[@]}"; do
         "EVAL_TYPE=0" "BATCHSIZE=1" "MSG_SIZE=512" "MODE=1"
         "INDEP_RATIO=${INDEP_RATIO}" "NUM_OBJECTS=${NUM_OBJECTS}"
         "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-        "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+        "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
         "READ_RATIO=${read_ratio}"
     )
     run_case "readratio_${read_ratio}" "$RUNTIME_SECONDS"

@@ -33,12 +33,12 @@ EVAL_DIR="${REPO_ROOT}/eval"
 
 CLUSTER_ACTIVE=false
 
-RUNTIME_SECONDS="${RUNTIME_SECONDS:-30}"
+RUNTIME_SECONDS="${RUNTIME_SECONDS:-60}"
 # A number, or the literal string "match" to run clients=servers for each
 # size in the sweep (client VMs are cycled/reused when a size needs more
 # clients than the 10-VM pool has, e.g. n=11 matched -- see
 # start_cluster_hetero.sh).
-CLIENT_COUNT="${CLIENT_COUNT:-10}"
+CLIENT_COUNT="${CLIENT_COUNT:-2}"
 
 ALL_CLUSTER_SIZES=(3 5 7 11)
 if [ -n "${CLUSTER_SIZES:-}" ]; then

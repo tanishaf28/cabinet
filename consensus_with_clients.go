@@ -76,240 +76,376 @@ func startSyncCabInstanceWithClients() {
 	crashList := prepCrashList()
 	log.Infof("crash list prepared. Leader entering serial loop")
 
+	// pendingCarryOver holds one already-dequeued request that arrived during
+	// a drain (see below) but didn't match the in-progress batch's
+	// (IsRead, Type) bucket -- it becomes the head of the *next* round
+	// instead of being dropped or blocking the drain.
+	var pendingCarryOver *ClientRequest
+
 	for {
-		select {
-		case <-shutdownSignal:
-			shutdownInProgress.Store(true)
-			log.Infof("Leader: graceful shutdown signal received, draining queue...")
-			drainDeadline := time.Now().Add(10 * time.Second)
-			for {
-				select {
-				case clientReqWrapper := <-clientRequestQueue:
-					if clientReqWrapper == nil {
+		var clientReqWrapper *ClientRequest
+
+		if pendingCarryOver != nil {
+			clientReqWrapper = pendingCarryOver
+			pendingCarryOver = nil
+		} else {
+			select {
+			case <-shutdownSignal:
+				shutdownInProgress.Store(true)
+				log.Infof("Leader: graceful shutdown signal received, draining queue...")
+				drainDeadline := time.Now().Add(10 * time.Second)
+				for {
+					select {
+					case w := <-clientRequestQueue:
+						if w == nil {
+							close(shutdownComplete)
+							return
+						}
+						w.Resp <- &ClientReply{Success: false, ErrorMsg: "server shutting down"}
+						if time.Now().After(drainDeadline) {
+							close(shutdownComplete)
+							return
+						}
+					case <-time.After(100 * time.Millisecond):
 						close(shutdownComplete)
 						return
 					}
-					clientReqWrapper.Resp <- &ClientReply{Success: false, ErrorMsg: "server shutting down"}
-					if time.Now().After(drainDeadline) {
-						close(shutdownComplete)
-						return
-					}
-				case <-time.After(100 * time.Millisecond):
-					close(shutdownComplete)
-					return
 				}
+
+			case w := <-clientRequestQueue:
+				clientReqWrapper = w
 			}
+		}
 
-		case clientReqWrapper := <-clientRequestQueue:
-			if clientReqWrapper == nil {
-				log.Infof("Leader: clientRequestQueue closed")
-				close(shutdownComplete)
-				return
+		if clientReqWrapper == nil {
+			log.Infof("Leader: clientRequestQueue closed")
+			close(shutdownComplete)
+			return
+		}
+
+		if shutdownInProgress.Load() {
+			clientReqWrapper.Resp <- &ClientReply{Success: false, ErrorMsg: "server shutting down"}
+			continue
+		}
+
+		if err := validateClientRequestPayload(clientReqWrapper.Args); err != nil {
+			log.Errorf("rejecting invalid client request | err: %v", err)
+			clientReqWrapper.Resp <- &ClientReply{
+				Success:  false,
+				ErrorMsg: err.Error(),
 			}
+			continue
+		}
 
-			if shutdownInProgress.Load() {
-				clientReqWrapper.Resp <- &ClientReply{Success: false, ErrorMsg: "server shutting down"}
-				continue
-			}
-
-			clientReq := clientReqWrapper.Args
-
-			requestStartTime := clientReqWrapper.StartTime
-			if requestStartTime.IsZero() {
-				requestStartTime = time.Now()
-			}
-
-			if err := validateClientRequestPayload(clientReq); err != nil {
-				log.Errorf("rejecting invalid client request | err: %v", err)
-				clientReqWrapper.Resp <- &ClientReply{
-					Success:  false,
-					ErrorMsg: err.Error(),
-				}
-				continue
-			}
-
-			myPClock := leaderPClock
-			leaderPClock++
-			fpriorities := pManager.GetFollowerPriorities(myPClock)
-
-			if myPClock == crashTime && crashMode != 0 {
-				log.Warnf("[CRASH] Leader dropping connections to %v at pClock=%d (simulating crash)", crashList, myPClock)
-				conns.Lock()
-				for _, sID := range crashList {
-					delete(conns.m, sID)
-				}
-				conns.Unlock()
-			}
-
-			// Inline consensus (no goroutine): fully serial like original Cabinet.
-			perfM.RecordStarter(myPClock)
-
-			receiver := make(chan ReplyInfo, numOfServers)
-			issueClientOps(myPClock, fpriorities, "CabService.ConsensusService", receiver, clientReq)
-
-			prioSum := mypriority.GetPrioVal()
-			prioQueue := make(chan serverID, numOfServers)
-			var repliesReceived []ReplyInfo
-
-			timeoutDur := 5 * time.Second
-			if shutdownInProgress.Load() {
-				timeoutDur = 250 * time.Millisecond
-			}
-			timeout := time.After(timeoutDur)
-			reached := false
-
-			for !reached {
+		// Server-side batching: accumulate additional queued requests that
+		// match this round's (IsRead, Type) bucket for up to batchWindowUs,
+		// capped at maxBatch total. batchWindowUs=0 or maxBatch=1 (the
+		// defaults) skips this loop entirely, so the single-request path
+		// below behaves exactly as it did before this change.
+		batch := []*ClientRequest{clientReqWrapper}
+		if batchWindowUs > 0 && maxBatch > 1 {
+			deadline := time.After(time.Duration(batchWindowUs) * time.Microsecond)
+		drain:
+			for len(batch) < maxBatch {
 				select {
-				case rinfo := <-receiver:
-					repliesReceived = append(repliesReceived, rinfo)
-					if w, ok := fpriorities[rinfo.SID]; ok {
-						prioSum += w
+				case w := <-clientRequestQueue:
+					if w == nil {
+						break drain
 					}
-
-					if prioSum > mypriority.GetMajority() {
-						var readValues []interface{}
-
-						if clientReq.IsRead {
-							// Quorum (ReadIndex-style) read: the priority quorum reached above
-							// already confirms this leader is still backed by a majority for
-							// pClock myPClock, exactly as it would for a write at this slot.
-							// Cabinet has no per-object value on followers (only the leader
-							// calls UpdateObjectCommit), so the value answered is always the
-							// leader's own local ObjectState.Value -- there is no fast/local
-							// read path to fall back to.
-							ids := clientReq.ObjIDs
-							if len(ids) == 0 {
-								ids = []string{clientReq.ObjID}
-							}
-							readValues = make([]interface{}, len(ids))
-							for i, objID := range ids {
-								if obj := mystate.GetObject(objID); obj != nil {
-									obj.Lock()
-									readValues[i] = obj.Value
-									obj.Unlock()
-								}
-							}
-							mystate.AddCommitIndex(batchsize)
-						} else {
-							switch clientReq.Type {
-							case PlainMsg:
-								bsz := len(clientReq.CmdPlain)
-								conflictOps, slowOps := 0, 0
-								for i := 0; i < bsz; i++ {
-									objID := clientReq.ObjID
-									if i < len(clientReq.ObjIDs) {
-										objID = clientReq.ObjIDs[i]
-									}
-									mystate.UpdateObjectCommit(objID, mystate.GetLeaderID(), [][]byte{clientReq.CmdPlain[i]}, "SLOW")
-
-									objType := clientReq.ObjType
-									if i < len(clientReq.ObjTypes) {
-										objType = clientReq.ObjTypes[i]
-									}
-									if objType == DependentObject {
-										perfM.IncConflict(myPClock)
-										conflictOps++
-									} else {
-										perfM.IncSlowPath(myPClock)
-										slowOps++
-									}
-								}
-								mystate.AddCommitIndex(batchsize)
-								if conflictOps > 0 {
-									perfM.AddConflictCommits(conflictOps)
-								}
-								if slowOps > 0 {
-									perfM.AddSlowCommits(slowOps)
-								}
-
-							case MongoDB:
-								bsz := len(clientReq.CmdMongo)
-								conflictOps, slowOps := 0, 0
-								for i := 0; i < bsz; i++ {
-									objID := clientReq.ObjID
-									if i < len(clientReq.ObjIDs) {
-										objID = clientReq.ObjIDs[i]
-									}
-									mystate.UpdateObjectCommit(objID, mystate.GetLeaderID(), []mongodb.Query{clientReq.CmdMongo[i]}, "SLOW")
-
-									objType := clientReq.ObjType
-									if i < len(clientReq.ObjTypes) {
-										objType = clientReq.ObjTypes[i]
-									}
-									if objType == DependentObject {
-										perfM.IncConflict(myPClock)
-										conflictOps++
-									} else {
-										perfM.IncSlowPath(myPClock)
-										slowOps++
-									}
-								}
-								mystate.AddCommitIndex(batchsize)
-								if conflictOps > 0 {
-									perfM.AddConflictCommits(conflictOps)
-								}
-								if slowOps > 0 {
-									perfM.AddSlowCommits(slowOps)
-								}
-								// Followers deferred their own MongoDB write
-								// during the proposal phase (see
-								// conJobMongoDB/MongoConfirm doc) - now that
-								// quorum is confirmed, tell them to apply it
-								// for real.
-								go broadcastMongoConfirm(clientReq.CmdMongo)
-
-							default:
-								mystate.AddCommitIndex(batchsize)
-							}
-						}
-
-						fullLatency := time.Since(requestStartTime)
-						log.Infof("[LATENCY] pClock=%d | Full=%dms", myPClock, fullLatency.Milliseconds())
-
-						perfM.RecordFinisher(myPClock)
-
-						clientReqWrapper.Resp <- &ClientReply{
-							LeaderClock: myPClock,
-							Success:     true,
-							ExeResult:   fullLatency.String(),
-							ReadValues:  readValues,
-						}
-
-						sort.Slice(repliesReceived, func(i, j int) bool {
-							return repliesReceived[i].Timestamp.Before(repliesReceived[j].Timestamp)
-						})
-						for _, rinfo := range repliesReceived {
-							prioQueue <- rinfo.SID
-						}
-						close(prioQueue)
-
-						if err := pManager.UpdateFollowerPriorities(myPClock+1, prioQueue, mystate.GetLeaderID()); err != nil {
-							log.Errorf("UpdateFollowerPriorities failed pClock=%d | err: %v", myPClock, err)
-						}
-						pscheme := pManager.GetPriorityScheme()
-						if len(pscheme) > 0 {
-							if err := mypriority.UpdatePriority(myPClock+1, pscheme[0]); err != nil {
-								log.Errorf("Leader priority update failed pClock=%d: %v", myPClock, err)
-							}
-						}
-
-						reached = true
-					}
-
-				case <-timeout:
 					if shutdownInProgress.Load() {
-						clientReqWrapper.Resp <- &ClientReply{LeaderClock: myPClock, Success: false, ErrorMsg: "server shutting down"}
-					} else {
-						log.Errorf("TIMEOUT at pClock=%d | Responded=%v | Missing=%v",
-							myPClock, repliedServerIDs(repliesReceived), missingFollowerIDs(fpriorities, repliesReceived))
-						perfM.RecordFinisher(myPClock)
-						clientReqWrapper.Resp <- &ClientReply{LeaderClock: myPClock, Success: false, ErrorMsg: "consensus timeout"}
+						w.Resp <- &ClientReply{Success: false, ErrorMsg: "server shutting down"}
+						continue
 					}
-					reached = true
+					if err := validateClientRequestPayload(w.Args); err != nil {
+						log.Errorf("rejecting invalid client request mid-drain | err: %v", err)
+						w.Resp <- &ClientReply{Success: false, ErrorMsg: err.Error()}
+						continue
+					}
+					if w.Args.IsRead == clientReqWrapper.Args.IsRead && w.Args.Type == clientReqWrapper.Args.Type {
+						batch = append(batch, w)
+					} else {
+						pendingCarryOver = w
+						break drain
+					}
+				case <-deadline:
+					break drain
 				}
 			}
 		}
+
+		mb := mergeClientArgs(batch)
+		clientReq := mb.args
+
+		requestStartTime := clientReqWrapper.StartTime
+		if requestStartTime.IsZero() {
+			requestStartTime = time.Now()
+		}
+
+		myPClock := leaderPClock
+		leaderPClock++
+		fpriorities := pManager.GetFollowerPriorities(myPClock)
+
+		if myPClock == crashTime && crashMode != 0 {
+			log.Warnf("[CRASH] Leader dropping connections to %v at pClock=%d (simulating crash)", crashList, myPClock)
+			conns.Lock()
+			for _, sID := range crashList {
+				delete(conns.m, sID)
+			}
+			conns.Unlock()
+		}
+
+		// Inline consensus (no goroutine): fully serial like original Cabinet.
+		perfM.RecordStarter(myPClock)
+
+		receiver := make(chan ReplyInfo, numOfServers)
+		issueClientOps(myPClock, fpriorities, "CabService.ConsensusService", receiver, clientReq)
+
+		prioSum := mypriority.GetPrioVal()
+		prioQueue := make(chan serverID, numOfServers)
+		var repliesReceived []ReplyInfo
+
+		timeoutDur := 5 * time.Second
+		if shutdownInProgress.Load() {
+			timeoutDur = 250 * time.Millisecond
+		}
+		timeout := time.After(timeoutDur)
+		reached := false
+
+		for !reached {
+			select {
+			case rinfo := <-receiver:
+				repliesReceived = append(repliesReceived, rinfo)
+				if w, ok := fpriorities[rinfo.SID]; ok {
+					prioSum += w
+				}
+
+				if prioSum > mypriority.GetMajority() {
+					var readValues []interface{}
+					// totalOps is the number of ops actually committed by this
+					// round, whether it's one client's request or several
+					// merged together -- using this instead of the global
+					// batchsize flag keeps AddCommitIndex accurate once
+					// server-side batching can merge more ops into one round
+					// than any single client packed into its own request.
+					totalOps := mb.offsets[len(mb.offsets)-1]
+
+					if clientReq.IsRead {
+						// Quorum (ReadIndex-style) read: the priority quorum reached above
+						// already confirms this leader is still backed by a majority for
+						// pClock myPClock, exactly as it would for a write at this slot.
+						// Cabinet has no per-object value on followers (only the leader
+						// calls UpdateObjectCommit), so the value answered is always the
+						// leader's own local ObjectState.Value -- there is no fast/local
+						// read path to fall back to.
+						ids := clientReq.ObjIDs
+						if len(ids) == 0 {
+							ids = []string{clientReq.ObjID}
+						}
+						readValues = make([]interface{}, len(ids))
+						for i, objID := range ids {
+							if obj := mystate.GetObject(objID); obj != nil {
+								obj.Lock()
+								readValues[i] = obj.Value
+								obj.Unlock()
+							}
+						}
+						mystate.AddCommitIndex(totalOps)
+					} else {
+						switch clientReq.Type {
+						case PlainMsg:
+							bsz := len(clientReq.CmdPlain)
+							conflictOps, slowOps := 0, 0
+							for i := 0; i < bsz; i++ {
+								objID := clientReq.ObjID
+								if i < len(clientReq.ObjIDs) {
+									objID = clientReq.ObjIDs[i]
+								}
+								mystate.UpdateObjectCommit(objID, mystate.GetLeaderID(), [][]byte{clientReq.CmdPlain[i]}, "SLOW")
+
+								objType := clientReq.ObjType
+								if i < len(clientReq.ObjTypes) {
+									objType = clientReq.ObjTypes[i]
+								}
+								if objType == DependentObject {
+									perfM.IncConflict(myPClock)
+									conflictOps++
+								} else {
+									perfM.IncSlowPath(myPClock)
+									slowOps++
+								}
+							}
+							mystate.AddCommitIndex(totalOps)
+							if conflictOps > 0 {
+								perfM.AddConflictCommits(conflictOps)
+							}
+							if slowOps > 0 {
+								perfM.AddSlowCommits(slowOps)
+							}
+
+						case MongoDB:
+							bsz := len(clientReq.CmdMongo)
+							conflictOps, slowOps := 0, 0
+							for i := 0; i < bsz; i++ {
+								objID := clientReq.ObjID
+								if i < len(clientReq.ObjIDs) {
+									objID = clientReq.ObjIDs[i]
+								}
+								mystate.UpdateObjectCommit(objID, mystate.GetLeaderID(), []mongodb.Query{clientReq.CmdMongo[i]}, "SLOW")
+
+								objType := clientReq.ObjType
+								if i < len(clientReq.ObjTypes) {
+									objType = clientReq.ObjTypes[i]
+								}
+								if objType == DependentObject {
+									perfM.IncConflict(myPClock)
+									conflictOps++
+								} else {
+									perfM.IncSlowPath(myPClock)
+									slowOps++
+								}
+							}
+							mystate.AddCommitIndex(totalOps)
+							if conflictOps > 0 {
+								perfM.AddConflictCommits(conflictOps)
+							}
+							if slowOps > 0 {
+								perfM.AddSlowCommits(slowOps)
+							}
+							// Followers deferred their own MongoDB write
+							// during the proposal phase (see
+							// conJobMongoDB/MongoConfirm doc) - now that
+							// quorum is confirmed, tell them to apply it
+							// for real.
+							go broadcastMongoConfirm(clientReq.CmdMongo)
+
+						default:
+							mystate.AddCommitIndex(totalOps)
+						}
+					}
+
+					perfM.RecordFinisher(myPClock)
+
+					// Fan the shared round outcome back out to every original
+					// request merged into this batch. All of them share one
+					// fate (this round's quorum result) -- that's the actual
+					// throughput win from server-side batching, the same way
+					// a single client's pre-packed multi-op batch already
+					// commits as one all-or-nothing round today. Each member
+					// still gets its own latency (measured from its own
+					// enqueue time) and its own slice of readValues.
+					for i, w := range batch {
+						lo, hi := mb.offsets[i], mb.offsets[i+1]
+						var rv []interface{}
+						if readValues != nil {
+							rv = readValues[lo:hi]
+						}
+						memberLatency := time.Since(w.StartTime)
+						w.Resp <- &ClientReply{
+							LeaderClock: myPClock,
+							Success:     true,
+							ExeResult:   memberLatency.String(),
+							ReadValues:  rv,
+						}
+					}
+					log.Infof("[LATENCY] pClock=%d | batchSize=%d | Full=%dms", myPClock, len(batch), time.Since(requestStartTime).Milliseconds())
+
+					sort.Slice(repliesReceived, func(i, j int) bool {
+						return repliesReceived[i].Timestamp.Before(repliesReceived[j].Timestamp)
+					})
+					for _, rinfo := range repliesReceived {
+						prioQueue <- rinfo.SID
+					}
+					close(prioQueue)
+
+					if err := pManager.UpdateFollowerPriorities(myPClock+1, prioQueue, mystate.GetLeaderID()); err != nil {
+						log.Errorf("UpdateFollowerPriorities failed pClock=%d | err: %v", myPClock, err)
+					}
+					pscheme := pManager.GetPriorityScheme()
+					if len(pscheme) > 0 {
+						if err := mypriority.UpdatePriority(myPClock+1, pscheme[0]); err != nil {
+							log.Errorf("Leader priority update failed pClock=%d: %v", myPClock, err)
+						}
+					}
+
+					reached = true
+				}
+
+			case <-timeout:
+				errMsg := "consensus timeout"
+				if shutdownInProgress.Load() {
+					errMsg = "server shutting down"
+				} else {
+					log.Errorf("TIMEOUT at pClock=%d | Responded=%v | Missing=%v",
+						myPClock, repliedServerIDs(repliesReceived), missingFollowerIDs(fpriorities, repliesReceived))
+					perfM.RecordFinisher(myPClock)
+				}
+				for _, w := range batch {
+					w.Resp <- &ClientReply{LeaderClock: myPClock, Success: false, ErrorMsg: errMsg}
+				}
+				reached = true
+			}
+		}
 	}
+}
+
+// mergedClientBatch is the result of merging one or more queued *ClientRequest
+// into a single ClientArgs for one shared consensus round. offsets[i]..
+// offsets[i+1] is the index range within args' ObjIDs/CmdPlain/CmdMongo that
+// belongs to the i-th element of the originating batch (offsets has
+// len(batch)+1 entries) -- used to slice each member's own ReadValues back
+// out after a merged read round completes.
+type mergedClientBatch struct {
+	args    *ClientArgs
+	offsets []int
+}
+
+// mergeClientArgs concatenates a batch of same-(IsRead,Type) client requests
+// into one ClientArgs. Callers (the drain loop above) must guarantee every
+// element shares the same IsRead and Type -- reads and writes, or PlainMsg
+// and MongoDB, must never be merged into one round, since the reply-building
+// code above branches once on clientReq.IsRead/clientReq.Type for the whole
+// merged batch.
+func mergeClientArgs(batch []*ClientRequest) *mergedClientBatch {
+	if len(batch) == 1 {
+		a := batch[0].Args
+		n := len(a.ObjIDs)
+		if n == 0 {
+			n = 1
+		}
+		return &mergedClientBatch{args: a, offsets: []int{0, n}}
+	}
+
+	head := batch[0].Args
+	merged := &ClientArgs{
+		ClientID:    head.ClientID,
+		ClientClock: head.ClientClock,
+		Type:        head.Type,
+		IsRead:      head.IsRead,
+		ObjType:     head.ObjType,
+		ObjID:       head.ObjID,
+	}
+	offsets := make([]int, 0, len(batch)+1)
+	offsets = append(offsets, 0)
+	for _, w := range batch {
+		a := w.Args
+		ids := a.ObjIDs
+		if len(ids) == 0 {
+			ids = []string{a.ObjID}
+		}
+		types := a.ObjTypes
+		if len(types) == 0 {
+			types = make([]int, len(ids))
+			for i := range types {
+				types[i] = a.ObjType
+			}
+		}
+		merged.ObjIDs = append(merged.ObjIDs, ids...)
+		merged.ObjTypes = append(merged.ObjTypes, types...)
+		merged.CmdPlain = append(merged.CmdPlain, a.CmdPlain...)
+		merged.CmdMongo = append(merged.CmdMongo, a.CmdMongo...)
+		offsets = append(offsets, len(merged.ObjIDs))
+	}
+	return &mergedClientBatch{args: merged, offsets: offsets}
 }
 
 // issueClientOps broadcasts client operations to all followers

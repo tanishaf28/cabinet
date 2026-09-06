@@ -34,6 +34,11 @@ LOG_LEVEL="${LOG_LEVEL:-debug}"
 ENABLE_PRIORITY="${ENABLE_PRIORITY:-false}"
 MAX_INFLIGHT="${MAX_INFLIGHT:-5}"
 READ_RATIO="${READ_RATIO:-0}"
+# Server-side batch accumulation (leader-only; 0/1 = disabled, today's
+# per-RPC-round behavior). See consensus_with_clients.go's
+# startSyncCabInstanceWithClients.
+BATCHWINDOWUS="${BATCHWINDOWUS:-0}"
+MAXBATCH="${MAXBATCH:-1}"
 
 # Heterogeneous machine-type composition (strong/weak mix) is baked into a
 # dedicated config file per cluster size — the server IP/type prefix is
@@ -84,7 +89,16 @@ CLIENTS_PER_VM=1
 copy_binary() {
     local target_ip=$1
     echo " Copying binary to $target_ip..."
-    scp -i "$SSH_KEY" "${SCRIPT_DIR}/${BINARY}" "$USER@$target_ip:$REMOTE_DIR/"
+    # scp straight to the final path fails with "dest open: Failure" if a
+    # stale process from an earlier case/run is still executing that file
+    # (e.g. a crash-test client hung on its killed server's connection,
+    # past the previous case's stop step). Copy to a temp path and mv -f
+    # into place instead -- rename works even while the old binary is
+    # still running, unlike an in-place overwrite.
+    local remote_tmp="${REMOTE_DIR}/.${BINARY}.tmp"
+    ssh -i "$SSH_KEY" "$USER@$target_ip" "mkdir -p '${REMOTE_DIR}'"
+    scp -i "$SSH_KEY" "${SCRIPT_DIR}/${BINARY}" "$USER@$target_ip:${remote_tmp}"
+    ssh -i "$SSH_KEY" "$USER@$target_ip" "mv -f '${remote_tmp}' '${REMOTE_DIR}/${BINARY}' && chmod 755 '${REMOTE_DIR}/${BINARY}'"
 }
 
 copy_config() {
@@ -124,6 +138,8 @@ nohup ./${BINARY} \\
     -max-inflight=${MAX_INFLIGHT} \
     -ep=${ENABLE_PRIORITY} \\
     -rstep=${RATIO_STEP} \\
+    -batchwindowus=${BATCHWINDOWUS} \\
+    -maxbatch=${MAXBATCH} \\
     > "${LOG_DIR}/server${server_id}/output.log" 2>&1 &
 echo "Server ${server_id} launched (PID \$!)"
 EOF

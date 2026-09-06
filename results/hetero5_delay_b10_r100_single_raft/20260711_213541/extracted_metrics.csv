@@ -1,2 +1,0 @@
-system,size,experiment,filename,throughput,avg_latency,p50,p95,p99,conflict
-raft,5,cycle_10n5d_5ms_jitter_0ms_indep100_b10,merged_cabinet_clients_20260711_213832.csv,3833.6,12.76,7.6,60.0,61.6,0.0

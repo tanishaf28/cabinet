@@ -8,9 +8,9 @@
 #
 #   ./run_hetero_crash_cab.sh [replica2|replica3|replica4|leader|all] [batchsize] [indep_ratio]
 #
-# Defaults to running all three follower cases. NUM_CLIENTS=5,
-# BATCHSIZE=100 (default), MSG_SIZE=512, RUNTIME_SECONDS=60, and the
-# 5-host CLIENT_IPS list are shared byte-for-byte with woc's, epaxos's,
+# Defaults to running all three follower cases. NUM_CLIENTS=2,
+# BATCHSIZE=1 (default), MSG_SIZE=512, RUNTIME_SECONDS=60, and the
+# 2-host CLIENT_IPS list are shared byte-for-byte with woc's, epaxos's,
 # and raft's own crash-eval drivers so all four protocols' crash evals
 # run under identical offered load and are comparable. THRESHOLD=1 is
 # Cabinet's own tunable priority-quorum default (Raft/EPaxos use t=2's
@@ -25,7 +25,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$SCRIPT_DIR"
 
 TARGET="${1:-all}"
-BATCHSIZE_OVERRIDE="${2:-100}"
+BATCHSIZE_OVERRIDE="${2:-1}"
 INDEP_RATIO_OVERRIDE="${3:-90}"
 
 START_SCRIPT="${SCRIPT_DIR}/start_cluster_hetero.sh"
@@ -41,37 +41,34 @@ RUN_TS="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="${RESULT_ROOT}/${RUN_TS}"
 EVAL_DIR="${REPO_ROOT}/eval"
 
-SERVER_IPS=(
-    "192.168.73.59"
-    "192.168.73.243"
-    "192.168.73.192"
-    "192.168.73.134"
-    "192.168.73.132"
-)
+# start_cluster_hetero.sh's own default CONFIG_PATH for NUM_SERVERS=5 is
+# cluster_hetero_5n_10c.conf; pinned explicitly here (and passed via
+# BASE_ENV below) so SERVER_IPS/CLIENT_IPS derived from it below can never
+# drift from what actually gets deployed, unlike the previous hardcoded
+# SERVER_IPS list which had drifted from an earlier IP pool.
+CONFIG_PATH="${REPO_ROOT}/config/cluster_hetero_5n_10c.conf"
+mapfile -t ALL_POOL_IPS < <(awk 'NF >= 2 {print $2}' "$CONFIG_PATH")
+SERVER_IPS=("${ALL_POOL_IPS[@]:0:5}")
 
-# Must match the client slice start_cluster_hetero.sh assigns for
-# NUM_CLIENTS=5 (config pool order after the 5 server IPs) -- same list
-# used by woc/epaxos/raft's crash scripts so all 4 protocols' crash evals
-# run on identical client VMs.
-CLIENT_IPS=(
-    "192.168.73.159"
-    "192.168.73.84"
-    "192.168.73.218"
-    "192.168.73.219"
-    "192.168.73.25"
-)
+NUM_CLIENTS="${NUM_CLIENTS:-2}"
+
+# Client slice start_cluster_hetero.sh assigns for NUM_CLIENTS (config
+# pool order after the 5 server IPs) -- same list used by woc/epaxos/raft's
+# crash scripts so all 4 protocols' crash evals run on identical client VMs.
+CLIENT_IPS=("${ALL_POOL_IPS[@]:5:NUM_CLIENTS}")
 
 CLUSTER_ACTIVE=false
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-60}"
 CRASH_TRIGGER_SECONDS="${CRASH_TRIGGER_SECONDS:-10}"
 
 BASE_ENV=(
-    "NUM_SERVERS=5" "NUM_CLIENTS=5" "THRESHOLD=1" "OPS=0"
+    "NUM_SERVERS=5" "NUM_CLIENTS=${NUM_CLIENTS}" "THRESHOLD=1" "OPS=0"
     "EVAL_TYPE=0" "BATCHSIZE=${BATCHSIZE_OVERRIDE}" "MSG_SIZE=512" "MODE=1"
     "INDEP_RATIO=${INDEP_RATIO_OVERRIDE}" "NUM_OBJECTS=1000"
     "PIPELINE_MODE=true" "MAX_INFLIGHT=5"
-    "ENABLE_TIMESERIES=true"
+    "ENABLE_TIMESERIES=true" "TPS_TIMELINE_INTERVAL_MS=200"
     "LOG_LEVEL=info" "ENABLE_PRIORITY=true" "SERVER_BATCHING=false"
+    "CONFIG_PATH=${CONFIG_PATH}"
 )
 
 mkdir -p "$RUN_DIR"
@@ -197,7 +194,11 @@ run_crash_case_sampled() {
     echo "  [crash] Observing ${RUNTIME_SECONDS}s after fault..."
     sleep "$RUNTIME_SECONDS"
 
-    stop_cluster
+    # A deliberately-killed node showing as already-down is the expected
+    # outcome of a crash test, not a real failure -- don't let a non-zero
+    # exit here (set -euo pipefail above) abort the rest of the sweep
+    # before archiving this case's results.
+    stop_cluster || true
     archive_results "$label"
 }
 

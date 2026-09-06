@@ -132,7 +132,7 @@ run_case() {
         "EVAL_TYPE=0" "BATCHSIZE=1000" "MSG_SIZE=512" "MODE=1"
         "INDEP_RATIO=${indep}" "NUM_OBJECTS=1000"
         "BATCH_MODE=single" "BATCH_COMPOSITION=object-specific"
-        "LOG_LEVEL=debug" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
+        "LOG_LEVEL=info" "ENABLE_PRIORITY=false" "RATIO_STEP=0.001"
         "ENABLE_TIMESERIES=${extra_timeseries}"
     )
 
